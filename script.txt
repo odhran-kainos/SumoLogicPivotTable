@@ -1,0 +1,39 @@
+_sourceCategory=log.eu1prdmgmt01.velocity
+// Extract and Filter out Non-Prod Environments
+| parse regex "[.]{1}(?<env>.*)[.]{1,}velocity\s" 
+| where env = "eu1prd01" 
+
+// Extract additional fields
+| parse "[*] [*] [*] [*] [*] * *" as thread, intID, realm, tenant, user, loglevel, Message
+| where loglevel = "ERROR" 
+
+// Extract Error Message:
+| parse regex "Caused by: (?<CausedBy>.+?(?=\\n|$))"
+
+// Filter out PSQL Errors that are not appearing in current Pivot Table.
+| parse "Caused by: *:" as ShortCausedBy
+| where ShortCausedBy != "org.postgresql.util.PSQLException"
+
+// Remove duplicate errors raise a few seconds after the initial occurance.
+| parse regex "\d{4}-\d{2}-\d{2}T\d{2}:(?<errorTime>\d{2}:\d{2})."
+| formatDate(_messageTime, "mm:ss") as messageTime
+| where messageTime = errorTime 
+
+// Lookup short error messages from external lookup table on HTTPs
+| lookup ShortError, InternalTicket from https://onedrive.live.com/download?cid=B0ECB2969F2EFD46&resid=B0ECB2969F2EFD46%213120&authkey=AAnIrgysk4fr_Uk on CausedBy=Error
+
+// Break up the data into 1 day slices
+| timeslice 1d
+| formatDate(_timeslice,"yyyy-MM-dd") as day
+
+// Rename fields to enforce order in CSV dump
+| ShortError as %"01-ShortName"
+| InternalTicket as %"02-InternalTicket"
+
+// Aggregate errors per type, per day
+| count by  %"01-ShortName", %"02-InternalTicket", day
+| where _count > 1
+
+// Pivot data  
+| transpose row %"01-ShortName", %"02-InternalTicket" column day
+
